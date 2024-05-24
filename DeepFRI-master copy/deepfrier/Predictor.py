@@ -12,6 +12,7 @@ from .utils import load_catalogue, load_FASTA, load_predicted_PDB, seq2onehot
 from .layers import MultiGraphConv, GraphConv, FuncPredictor, SumPooling
 
 
+# +
 class GradCAM(object):
     """
     GradCAM for protein sequences.
@@ -29,22 +30,38 @@ class GradCAM(object):
         if use_guided_grads:
             grads = tf.cast(conv_outputs > 0, "float32")*tf.cast(grads > 0, "float32")*grads
 
+#         print(f"Conv Outputs: {conv_outputs.numpy()}")
+#         print(f"Gradients: {grads.numpy()}")
+        
         return conv_outputs, grads
 
     def _compute_cam(self, output, grad):
         weights = tf.reduce_mean(grad, axis=1)
         # perform weighted sum
         cam = tf.reduce_sum(tf.multiply(weights, output), axis=-1).numpy()
-
+        
+        #print(f"CAM: {cam}")
+        
         return cam
 
     def heatmap(self, inputs, class_idx, use_guided_grads=False):
         output, grad = self._get_gradients_and_filters(inputs, class_idx, use_guided_grads=use_guided_grads)
         cam = self._compute_cam(output, grad)
-        heatmap = (cam - cam.min())/(cam.max() - cam.min())
+        cam_min, cam_max = cam.min(), cam.max()
 
+#         return heatmap.reshape(-1)
+    
+        if cam_max - cam_min == 0:
+            heatmap = np.zeros_like(cam)  # Avoid division by zero
+        else:
+            heatmap = (cam - cam_min) / (cam_max - cam_min)
+
+        #print(f"Heatmap: {heatmap}")
+        
         return heatmap.reshape(-1)
 
+
+# -
 
 class Predictor(object):
     """
@@ -240,8 +257,15 @@ class Predictor(object):
                 self.pdb2cam[chain]['GO_names'].append(self.gonames[go_indx])
                 self.pdb2cam[chain]['sequence'] = self.data[chain][1]
                 self.pdb2cam[chain]['saliency_maps'].append(gradcam.heatmap(self.data[chain][0], go_indx, use_guided_grads=use_guided_grads).tolist())
+                print(self.pdb2cam[chain]['saliency_maps'])
+                #print((self.data[chain][0], go_indx, use_guided_grads=use_guided_grads).tolist())
                 heatmap = gradcam.heatmap(self.data[chain][0], go_indx, use_guided_grads=use_guided_grads)
                 self.pdb2cam[chain]['saliency_maps'].append(heatmap.tolist())
+                
+                if self.gonames[go_indx] not in grad_cam_scores:
+                    grad_cam_scores[self.gonames[go_indx]] = []
+                grad_cam_scores[self.gonames[go_indx]].append(heatmap)
+                
                 grad_cam_scores.append(heatmap)  # Append the heatmap (activation scores) to grad_cam_scores
     
         return grad_cam_scores if grad_cam_scores else None
@@ -291,18 +315,23 @@ class DeepFool:
 
     def run_deepfool(self, fasta_sequence):
         initial_prediction = self.predictor.predict(fasta_sequence)
+        print(f"Fasta sequence: {fasta_sequence}")
+        print(f"Initial Prediction: {initial_prediction}")
         mutation_thresholds = []
 
         for _ in range(50):
             mutated_sequence = list(fasta_sequence)
-            grad_cam_scores = self.predictor.compute_GradCAM(layer_name='global_max_pooling1d', use_guided_grads=False)
+            grad_cam_scores = self.predictor.compute_GradCAM(layer_name='CNN_concatenate', use_guided_grads=False)
+            print(f"Grad CAM Scores: {grad_cam_scores}")
             aa_probabilities = self._assign_probabilities(grad_cam_scores)
+            print(f"AA Probabilities: {aa_probabilities}")
             mutations = 0
             misclassified = False
             mutated_positions = set()
 
             while not misclassified and mutations < len(fasta_sequence):
                 sorted_indices = np.argsort(aa_probabilities)[::-1]
+                print(f"Sorted Indices: {sorted_indices}")
 
                 for idx in sorted_indices:
                     if idx in mutated_positions:
@@ -344,3 +373,6 @@ class DeepFool:
         plt.ylabel('Frequency')
         plt.savefig(output_path)
         plt.show()
+# -
+
+
