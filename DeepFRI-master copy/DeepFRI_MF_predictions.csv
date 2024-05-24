@@ -1,0 +1,6 @@
+### Predictions made by DeepFRI.
+Protein,GO_term/EC_number,Score,GO_term/EC_number name
+query_prot,GO:0003677,0.43876,DNA binding
+query_prot,GO:0140110,0.15614,transcription regulator activity
+query_prot,GO:0003700,0.13093,DNA-binding transcription factor activity
+query_prot,GO:0003723,0.11285,RNA binding
