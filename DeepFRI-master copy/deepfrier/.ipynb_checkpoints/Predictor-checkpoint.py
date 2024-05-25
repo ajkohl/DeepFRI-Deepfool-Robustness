@@ -146,6 +146,10 @@ class Predictor(object):
                     self.goidx2chains[idx] = set()
                 self.goidx2chains[idx].add(chain)
                 self.prot2goterms[chain].append((self.goterms[idx], self.gonames[idx], float(y[idx])))
+        top3_indices = np.argsort(y)[-3:][::-1]
+        top3_predictions = [(self.goterms[idx], self.gonames[idx], float(y[idx])) for idx in top3_indices]
+
+        return top3_predictions
 
     def predict_from_PDB_dir(self, dir_name, cmap_thresh=10.0):
         print ("### Computing predictions from directory with PDB files...")
@@ -240,11 +244,14 @@ class Predictor(object):
     def compute_GradCAM(self, layer_name='GCNN_concatenate', use_guided_grads=False):
         print ("### Computing GradCAM for each function of every predicted protein...")
         gradcam = GradCAM(self.model, layer_name=layer_name)
-        grad_cam_scores = []
+        grad_cam_scores = {}
 
         self.pdb2cam = {}
         for go_indx in self.goidx2chains:
             pred_chains = list(self.goidx2chains[go_indx])
+            function_name = self.gonames[go_indx]  # Ensure this is the correct type (string)
+            if isinstance(function_name, bytes):
+                function_name = function_name.decode("utf-8")
             print ("### Computing gradCAM for ", self.gonames[go_indx], '... [# proteins=', len(pred_chains), ']')
             for chain in pred_chains:
                 if chain not in self.pdb2cam:
@@ -257,16 +264,16 @@ class Predictor(object):
                 self.pdb2cam[chain]['GO_names'].append(self.gonames[go_indx])
                 self.pdb2cam[chain]['sequence'] = self.data[chain][1]
                 self.pdb2cam[chain]['saliency_maps'].append(gradcam.heatmap(self.data[chain][0], go_indx, use_guided_grads=use_guided_grads).tolist())
-                print(self.pdb2cam[chain]['saliency_maps'])
+                #print(self.pdb2cam[chain]['saliency_maps'])
                 #print((self.data[chain][0], go_indx, use_guided_grads=use_guided_grads).tolist())
                 heatmap = gradcam.heatmap(self.data[chain][0], go_indx, use_guided_grads=use_guided_grads)
                 self.pdb2cam[chain]['saliency_maps'].append(heatmap.tolist())
                 
                 if self.gonames[go_indx] not in grad_cam_scores:
-                    grad_cam_scores[self.gonames[go_indx]] = []
-                grad_cam_scores[self.gonames[go_indx]].append(heatmap)
+                    grad_cam_scores[function_name] = []
+                grad_cam_scores[function_name].append(heatmap)
                 
-                grad_cam_scores.append(heatmap)  # Append the heatmap (activation scores) to grad_cam_scores
+                #grad_cam_scores.append(heatmap)  # Append the heatmap (activation scores) to grad_cam_scores
     
         return grad_cam_scores if grad_cam_scores else None
 
@@ -279,6 +286,7 @@ class Predictor(object):
 
 # +
 from collections import Counter
+import matplotlib.pyplot as plt
 
 class DeepFool:
     def __init__(self, predictor):
@@ -311,40 +319,82 @@ class DeepFool:
     
     def _assign_probabilities(self, grad_cam_scores):
         total_score = sum(grad_cam_scores)
-        return [score / total_score for score in grad_cam_scores]
+        probabilities = [score / total_score for score in grad_cam_scores]
+#         # Normalize to ensure they sum to 1
+#         probabilities_sum = sum(probabilities)
+#         if not np.isclose(probabilities_sum, 1):
+#             probabilities = [p / probabilities_sum for p in probabilities]
+        return probabilities
+    
+    def _weighted_random_choice(self, sorted_indices, probabilities):
+        total = sum(probabilities)
+        r = np.random.uniform(0, total)
+        upto = 0
+        for idx, prob in zip(sorted_indices, probabilities):
+            if upto + prob >= r:
+                return idx
+            upto += prob
+        return sorted_indices[-1]
+
 
     def run_deepfool(self, fasta_sequence):
-        initial_prediction = self.predictor.predict(fasta_sequence)
-        print(f"Fasta sequence: {fasta_sequence}")
+        top3_predictions = self.predictor.predict(fasta_sequence)
+        print(f"Top 3 predictions: {top3_predictions}")
+        initial_prediction = top3_predictions[0] if top3_predictions else None
         print(f"Initial Prediction: {initial_prediction}")
         mutation_thresholds = []
 
+        
+        grad_cam_scores = self.predictor.compute_GradCAM(layer_name='CNN_concatenate', use_guided_grads=False)
+        #print(f"Grad CAM Scores: {grad_cam_scores}")
+            
+        if initial_prediction:
+            function_name = initial_prediction[1]
+            relevant_scores = grad_cam_scores.get(function_name)
+            if relevant_scores:
+                combined_grad_cam_scores = np.concatenate([np.array(scores).flatten() for scores in relevant_scores])
+            else:
+                print(f"No Grad-CAM scores found for {function_name}.")
+                return None
+        else:
+            print("No initial prediction found.")
+            return None
+
+        #print(f"Combined Grad-CAM scores: {combined_grad_cam_scores}")
+
+        aa_probabilities = self._assign_probabilities(combined_grad_cam_scores)
+        #print(f"AA Probabilities: {aa_probabilities}")
+
+        print(f"AA Probabilities: {aa_probabilities}")
+        print(f"Sum of AA Probabilities: {sum(aa_probabilities)}")
+        if len(aa_probabilities) != len(fasta_sequence):
+            print(f"Length of AA Probabilities ({len(aa_probabilities)}) does not match length of FASTA sequence ({len(fasta_sequence)})")
+            return None
+        
+        sorted_indices = np.argsort(aa_probabilities)[::-1]
+        #print(f"Sorted Indices: {sorted_indices}")
+            
         for _ in range(50):
             mutated_sequence = list(fasta_sequence)
-            grad_cam_scores = self.predictor.compute_GradCAM(layer_name='CNN_concatenate', use_guided_grads=False)
-            print(f"Grad CAM Scores: {grad_cam_scores}")
-            aa_probabilities = self._assign_probabilities(grad_cam_scores)
-            print(f"AA Probabilities: {aa_probabilities}")
             mutations = 0
             misclassified = False
             mutated_positions = set()
 
             while not misclassified and mutations < len(fasta_sequence):
-                sorted_indices = np.argsort(aa_probabilities)[::-1]
-                print(f"Sorted Indices: {sorted_indices}")
-
-                for idx in sorted_indices:
-                    if idx in mutated_positions:
-                        continue
+                idx = self._weighted_random_choice(sorted_indices, aa_probabilities)
+                if idx in mutated_positions:
+                    continue
 
                     original_aa = mutated_sequence[idx]
                     dissimilar_aas = self._get_most_dissimilar_amino_acids(original_aa)
 
                     for new_aa in dissimilar_aas:
                         mutated_sequence[idx] = new_aa
-                        new_prediction = self.predictor.predict_function(''.join(mutated_sequence))
+                        new_top_three = self.predictor.predict(''.join(mutated_sequence))
+                        new_prediction = new_top_three[0]
+                        print(f"New prediction: {new_prediction}")
 
-                        if new_prediction != initial_prediction:
+                        if new_prediction[1] != initial_prediction[1]:
                             mutation_thresholds.append(mutations + 1)
                             misclassified = True
                             break
@@ -365,14 +415,16 @@ class DeepFool:
         print(mutation_thresholds)
         return mutation_thresholds
 
-    def plot_mutation_thresholds(self, mutation_thresholds):
-        plt.figure(figsize=(10, 6))
-        plt.hist(mutation_thresholds, bins=range(1, max(mutation_thresholds) + 1), edgecolor='black')
-        plt.title('Distribution of Mutation Thresholds for Misclassification')
-        plt.xlabel('Number of Mutations')
-        plt.ylabel('Frequency')
-        plt.savefig(output_path)
-        plt.show()
+#     def plot_mutation_thresholds(self, mutation_thresholds):
+#         plt.figure(figsize=(10, 6))
+#         plt.hist(mutation_thresholds, bins=range(1, max(mutation_thresholds) + 1), edgecolor='black')
+#         plt.title('Distribution of Mutation Thresholds for Misclassification')
+#         plt.xlabel('Number of Mutations')
+#         plt.ylabel('Frequency')
+#         plt.savefig(output_path)
+#         plt.show()
 # -
+
+
 
 

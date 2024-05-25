@@ -62,7 +62,7 @@ if __name__ == "__main__":
         if args.deepfool and ont in ['mf', 'ec']:
             deepfool = DeepFool(predictor)
             mutation_thresholds = deepfool.run_deepfool(args.seq)
-            deepfool.plot_mutation_thresholds(mutation_thresholds)
+#             deepfool.plot_mutation_thresholds(mutation_thresholds)
 #             with open(args.output_fn_prefix + "_" + ont.upper() + "_deepfool_thresholds.txt", 'w') as file:
 #                 for threshold in mutation_thresholds:
 #                     file.write(f'{threshold}\n')
