@@ -326,15 +326,35 @@ class DeepFool:
 #             probabilities = [p / probabilities_sum for p in probabilities]
         return probabilities
     
+    # def _weighted_random_choice(self, sorted_indices, probabilities):
+    #     total = sum(probabilities)
+    #     r = np.random.uniform(0, total)
+    #     upto = 0
+    #     # print(sorted_indices)
+    #     # print(probabilities)
+    #     # print(total)
+    #     for idx, prob in zip(sorted_indices, probabilities):
+    #         if upto + prob >= r:
+    #             return idx
+    #         upto += prob
+    #     return sorted_indices[-1]
     def _weighted_random_choice(self, sorted_indices, probabilities):
         total = sum(probabilities)
         r = np.random.uniform(0, total)
         upto = 0
+        loop_count = 0  # Initialize a counter to monitor loop iterations
+
         for idx, prob in zip(sorted_indices, probabilities):
             if upto + prob >= r:
                 return idx
             upto += prob
-        return sorted_indices[-1]
+            loop_count += 1
+            if loop_count > len(probabilities):  # If the loop iterates more than the number of probabilities
+                print("Loop exceeded expected iterations, check probabilities.")
+                break
+
+        return sorted_indices[-1]  # fallback in case of an unexpected situation
+
 
 
     def run_deepfool(self, fasta_sequence):
@@ -373,37 +393,43 @@ class DeepFool:
         
         sorted_indices = np.argsort(aa_probabilities)[::-1]
         #print(f"Sorted Indices: {sorted_indices}")
-            
+        # mutated_positions = set()
+
         for _ in range(50):
             mutated_sequence = list(fasta_sequence)
             mutations = 0
             misclassified = False
             mutated_positions = set()
 
-            while not misclassified and mutations < len(fasta_sequence):
+            while not misclassified and mutations < len(fasta_sequence)-1:
+                # print(f"Mutations: {mutations}")
+                # print(f"misclassified: {misclassified}")
+                # print(f"length: {len(fasta_sequence)}")
                 idx = self._weighted_random_choice(sorted_indices, aa_probabilities)
+                print(f"idx: {idx}")
+                print(f"mutated_positions: {mutated_positions}")
                 if idx in mutated_positions:
                     continue
 
-                    original_aa = mutated_sequence[idx]
-                    dissimilar_aas = self._get_most_dissimilar_amino_acids(original_aa)
+                original_aa = mutated_sequence[idx]
+                dissimilar_aas = self._get_most_dissimilar_amino_acids(original_aa)
 
-                    for new_aa in dissimilar_aas:
-                        mutated_sequence[idx] = new_aa
-                        new_top_three = self.predictor.predict(''.join(mutated_sequence))
-                        new_prediction = new_top_three[0]
-                        print(f"New prediction: {new_prediction}")
+                for new_aa in dissimilar_aas:
+                    mutated_sequence[idx] = new_aa
+                    new_top_three = self.predictor.predict(''.join(mutated_sequence))
+                    new_prediction = new_top_three[0]
+                    print(f"New prediction: {new_prediction}")
 
-                        if new_prediction[1] != initial_prediction[1]:
-                            mutation_thresholds.append(mutations + 1)
-                            misclassified = True
-                            break
-                    
-                    if misclassified:
+                    if new_prediction[1] != initial_prediction[1]:
+                        mutation_thresholds.append(mutations + 1)
+                        misclassified = True
                         break
+                
+                if misclassified:
+                    break
 
-                    mutated_positions.add(idx)
-                    mutations += 1
+                mutated_positions.add(idx)
+                mutations += 1
                     
         # Save mutation thresholds as JSON
         json_output_path = "output/mutation_thresholds.json"
@@ -415,15 +441,14 @@ class DeepFool:
         print(mutation_thresholds)
         return mutation_thresholds
 
-#     def plot_mutation_thresholds(self, mutation_thresholds):
-#         plt.figure(figsize=(10, 6))
-#         plt.hist(mutation_thresholds, bins=range(1, max(mutation_thresholds) + 1), edgecolor='black')
-#         plt.title('Distribution of Mutation Thresholds for Misclassification')
-#         plt.xlabel('Number of Mutations')
-#         plt.ylabel('Frequency')
-#         plt.savefig(output_path)
-#         plt.show()
-# -
+    def plot_mutation_thresholds(self, mutation_thresholds):
+        plt.figure(figsize=(10, 6))
+        plt.hist(mutation_thresholds, bins=range(1, max(mutation_thresholds) + 1), edgecolor='black')
+        plt.title('Distribution of Mutation Thresholds for Misclassification')
+        plt.xlabel('Number of Mutations')
+        plt.ylabel('Frequency')
+        plt.savefig('output/plot.png')
+        plt.show()
 
 
 
