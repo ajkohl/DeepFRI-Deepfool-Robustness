@@ -1,4 +1,4 @@
-# DeepFRI
+# DeepFRI (Adversarial Robustness)
 Deep functional residue identification
 <img src="figs/pipeline.png">
 
